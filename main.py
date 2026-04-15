@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import sqlite3
 import threading
 from datetime import datetime
 
@@ -26,6 +27,54 @@ app.add_middleware(
 )
 
 LOG_FILE = "math_qa_log.txt"
+DB_FILE  = "sessions.db"
+
+
+# ══════════════════════════════════════════════════════════
+# DATABASE SETUP — SQLite, stores every session permanently
+# ══════════════════════════════════════════════════════════
+
+def init_db():
+    con = sqlite3.connect(DB_FILE)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            session_id   TEXT PRIMARY KEY,
+            question     TEXT,
+            status       TEXT,
+            result       TEXT,
+            pending_tool TEXT,
+            pending_input TEXT,
+            created_at   TEXT,
+            updated_at   TEXT
+        )
+    """)
+    con.commit()
+    con.close()
+
+init_db()
+
+
+def db_insert_session(session_id: str, question: str):
+    """Called when /ask creates a new session."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    con = sqlite3.connect(DB_FILE)
+    con.execute(
+        "INSERT INTO sessions (session_id, question, status, created_at, updated_at) VALUES (?,?,?,?,?)",
+        (session_id, question, "running", now, now)
+    )
+    con.commit()
+    con.close()
+
+
+def db_update_session(session_id: str, **kwargs):
+    """Called whenever a session's status/result changes."""
+    kwargs["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    fields = ", ".join(f"{k} = ?" for k in kwargs)
+    values = list(kwargs.values()) + [session_id]
+    con = sqlite3.connect(DB_FILE)
+    con.execute(f"UPDATE sessions SET {fields} WHERE session_id = ?", values)
+    con.commit()
+    con.close()
 
 
 # ══════════════════════════════════════════════════════════
@@ -66,12 +115,25 @@ def hitl_approval(tool_name: str, pending_input: dict) -> bool:
     session["pending_input"] = pending_input
     session["status"]        = "waiting_for_approval"
 
+    # Persist to DB
+    db_update_session(session_id,
+        status        = "waiting_for_approval",
+        pending_tool  = tool_name,
+        pending_input = json.dumps(pending_input)
+    )
+
     # Signal /ask that HITL triggered — it can now return the response
     session["response_ready"].set()
 
-    # BLOCK this agent thread here until /resume calls hitl_event.set()
-    session["hitl_event"].wait()
+    # BLOCK this agent thread — wait max 120 seconds for human response
+    timed_out = not session["hitl_event"].wait(timeout=120)
     session["hitl_event"].clear()  # reset for any subsequent HITL in same session
+
+    if timed_out:
+        session["status"] = "timed_out"
+        session["result"] = "Request timed out. No response received within 2 minutes."
+        session["response_ready"].set()  # unblock /ask or /resume if still waiting
+        return False  # auto-reject
 
     return session["approved"]
 
@@ -236,14 +298,16 @@ def run_agent(session_id: str, question: str) -> None:
     _thread_local.session_id = session_id
     session = sessions[session_id]
     try:
-        result           = agent_executor.invoke({"input": question})
-        answer           = result["output"]
+        result            = agent_executor.invoke({"input": question})
+        answer            = result["output"]
         session["result"] = answer
         session["status"] = "completed"
         log_qa(question, answer)
+        db_update_session(session_id, status="completed", result=answer)
     except Exception as e:
         session["result"] = f"Error: {str(e)}"
         session["status"] = "error"
+        db_update_session(session_id, status="error", result=session["result"])
     finally:
         # Always signal response_ready so /ask or /resume can return
         session["response_ready"].set()
@@ -282,6 +346,9 @@ def ask(req: AskRequest):
         "hitl_event"    : threading.Event(),
         "response_ready": threading.Event(),
     }
+
+    # Persist new session to DB immediately
+    db_insert_session(session_id, req.question)
 
     # Start agent in background thread — does NOT block the server
     thread = threading.Thread(target=run_agent, args=(session_id, req.question), daemon=True)
@@ -367,7 +434,7 @@ def resume(req: ResumeRequest):
 
 
 # ══════════════════════════════════════════════════════════
-# GET /sessions — debug endpoint to see all active sessions
+# GET /sessions — active in-memory sessions (debug)
 # ══════════════════════════════════════════════════════════
 
 @app.get("/sessions")
@@ -379,3 +446,18 @@ def list_sessions():
         }
         for sid, s in sessions.items()
     }
+
+
+# ══════════════════════════════════════════════════════════
+# GET /history — all past sessions from SQLite
+# ══════════════════════════════════════════════════════════
+
+@app.get("/history")
+def get_history():
+    con  = sqlite3.connect(DB_FILE)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        "SELECT * FROM sessions ORDER BY created_at DESC LIMIT 200"
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]

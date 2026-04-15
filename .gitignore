@@ -35,6 +35,9 @@ approved.txt
 user1.txt
 test.txt
 
+# Local database
+sessions.db
+
 # Node.js (ui/)
 ui/node_modules/
 ui/dist/
