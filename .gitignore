@@ -24,6 +24,7 @@ env/
 .env.*.local
 
 # Jupyter Notebook
+*.ipynb
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
