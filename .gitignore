@@ -40,6 +40,7 @@ ui/node_modules/
 ui/dist/
 ui/build/
 ui/.cache/
+ui/.vite/
 
 # OS
 .DS_Store
