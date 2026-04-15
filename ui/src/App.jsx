@@ -8,14 +8,17 @@ function timeStr() {
 }
 
 export default function App() {
-  const [question, setQuestion]   = useState("");
-  const [status, setStatus]       = useState("");
-  const [loading, setLoading]     = useState(false);
-  const [hitl, setHitl]           = useState(null);
-  const [sessionId, setSessionId] = useState(null);
-  const [currentQ, setCurrentQ]   = useState(null);
-  const [history, setHistory]     = useState([]);
-  const [active, setActive]       = useState("chat");
+  const [question, setQuestion] = useState("");
+  const [status, setStatus]     = useState("");
+  const [loading, setLoading]   = useState(false);
+  const [history, setHistory]   = useState([]);
+  const [active, setActive]     = useState("chat");
+
+  // List of pending HITL requests  { session_id, pending_action, pending_input, question }
+  const [pending, setPending] = useState([]);
+
+  // Per-card resuming state  { [session_id]: "approving" | "rejecting" | null }
+  const [resuming, setResuming] = useState({});
 
   const stats = {
     total   : history.length,
@@ -25,26 +28,28 @@ export default function App() {
 
   async function sendQuestion() {
     if (!question.trim()) return;
+    const q = question.trim();
     setLoading(true);
     setStatus("Thinking...");
-    setHitl(null);
-    setCurrentQ(question);
+    setQuestion("");
 
     try {
       const res  = await fetch(`${BASE}/ask`, {
         method : "POST",
         headers: { "Content-Type": "application/json" },
-        body   : JSON.stringify({ question }),
+        body   : JSON.stringify({ question: q }),
       });
       const data = await res.json();
 
       if (data.status === "waiting_for_approval") {
-        setSessionId(data.session_id);
-        setHitl(data);
+        // Add to the pending list — keeps all previous ones too
+        setPending((prev) => [
+          ...prev,
+          { ...data, question: q, time: timeStr() },
+        ]);
         setStatus("");
       } else {
-        addHistory(question, data.answer, "math");
-        setQuestion("");
+        addHistory(q, data.answer, "math");
         setStatus("");
       }
     } catch {
@@ -53,36 +58,26 @@ export default function App() {
     setLoading(false);
   }
 
-  async function resume(approved) {
-    setLoading(true);
-    setHitl(null);
-    setStatus(approved ? "Approving..." : "Rejecting...");
+  async function resume(item, approved) {
+    const sid = item.session_id;
+    setResuming((prev) => ({ ...prev, [sid]: approved ? "approving" : "rejecting" }));
 
     try {
       const res  = await fetch(`${BASE}/resume`, {
         method : "POST",
         headers: { "Content-Type": "application/json" },
-        body   : JSON.stringify({ session_id: sessionId, approved }),
+        body   : JSON.stringify({ session_id: sid, approved }),
       });
       const data = await res.json();
 
-      if (data.status === "waiting_for_approval") {
-        setSessionId(data.session_id);
-        setHitl(data);
-        setStatus("");
-        setLoading(false);
-        return;
-      }
+      // Remove this card from pending list
+      setPending((prev) => prev.filter((p) => p.session_id !== sid));
+      setResuming((prev) => { const n = { ...prev }; delete n[sid]; return n; });
 
-      addHistory(currentQ, data.answer, approved ? "approved" : "rejected");
-      setQuestion("");
-      setSessionId(null);
-      setCurrentQ(null);
-      setStatus("");
+      addHistory(item.question, data.answer, approved ? "approved" : "rejected");
     } catch {
-      setStatus("Error resuming session.");
+      setResuming((prev) => { const n = { ...prev }; delete n[sid]; return n; });
     }
-    setLoading(false);
   }
 
   function addHistory(q, a, type) {
@@ -116,6 +111,9 @@ export default function App() {
           >
             <span className="nav-icon">{item.icon}</span>
             {item.label}
+            {item.id === "chat" && pending.length > 0 && (
+              <span className="pending-badge">{pending.length}</span>
+            )}
           </div>
         ))}
 
@@ -136,6 +134,9 @@ export default function App() {
             {active === "chat" ? "Chat" : active === "history" ? "History" : "Stats"}
           </span>
           <div className="topbar-right">
+            {pending.length > 0 && (
+              <span className="tag tag-warn">{pending.length} pending approval{pending.length > 1 ? "s" : ""}</span>
+            )}
             <span className="tag">HITL enabled</span>
             <span className="tag">gpt-4o-mini</span>
           </div>
@@ -176,38 +177,59 @@ export default function App() {
                 </div>
               </div>
 
-              {/* HITL */}
-              {hitl && (
+              {/* PENDING HITL LIST */}
+              {pending.length > 0 && (
                 <div>
-                  <p className="section-title">Approval Required</p>
-                  <div className="hitl-card">
-                    <div className="hitl-header">
-                      <span className="hitl-heading">Agent wants to write a file</span>
-                      <span className="hitl-badge">Pending</span>
-                    </div>
-                    <div className="hitl-detail">
-                      {[
-                        ["Session",  hitl.session_id],
-                        ["Tool",     hitl.pending_action],
-                        ["File",     hitl.pending_input?.filename],
-                        ["Content",  hitl.pending_input?.content],
-                      ].map(([key, val]) =>
-                        val ? (
-                          <div className="detail-row" key={key}>
-                            <span className="detail-key">{key}</span>
-                            <span className="detail-val">{val}</span>
+                  <p className="section-title">
+                    Approval Required
+                    <span className="section-count">{pending.length}</span>
+                  </p>
+                  <div className="hitl-list">
+                    {pending.map((item) => {
+                      const state = resuming[item.session_id];
+                      return (
+                        <div className="hitl-card" key={item.session_id}>
+                          <div className="hitl-header">
+                            <span className="hitl-heading">{item.question}</span>
+                            <span className="hitl-badge">
+                              {state === "approving" ? "Approving…" : state === "rejecting" ? "Rejecting…" : "Pending"}
+                            </span>
                           </div>
-                        ) : null
-                      )}
-                    </div>
-                    <div className="hitl-btns">
-                      <button className="btn btn-approve" onClick={() => resume(true)}>
-                        Approve
-                      </button>
-                      <button className="btn btn-reject" onClick={() => resume(false)}>
-                        Reject
-                      </button>
-                    </div>
+                          <div className="hitl-detail">
+                            {[
+                              ["Session",  item.session_id],
+                              ["Tool",     item.pending_action],
+                              ["File",     item.pending_input?.filename],
+                              ["Content",  item.pending_input?.content],
+                              ["Received", item.time],
+                            ].map(([key, val]) =>
+                              val ? (
+                                <div className="detail-row" key={key}>
+                                  <span className="detail-key">{key}</span>
+                                  <span className="detail-val">{val}</span>
+                                </div>
+                              ) : null
+                            )}
+                          </div>
+                          <div className="hitl-btns">
+                            <button
+                              className="btn btn-approve"
+                              onClick={() => resume(item, true)}
+                              disabled={!!state}
+                            >
+                              {state === "approving" ? "···" : "Approve"}
+                            </button>
+                            <button
+                              className="btn btn-reject"
+                              onClick={() => resume(item, false)}
+                              disabled={!!state}
+                            >
+                              {state === "rejecting" ? "···" : "Reject"}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}

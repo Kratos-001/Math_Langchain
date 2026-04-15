@@ -184,6 +184,9 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.7px;
   margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* ── CARD */
@@ -282,6 +285,53 @@ body {
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── PENDING BADGE on sidebar nav item */
+.pending-badge {
+  margin-left: auto;
+  background: #f59e0b;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 99px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+}
+
+/* ── SECTION COUNT pill */
+.section-count {
+  background: #f59e0b;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 99px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* ── WARNING tag in topbar */
+.tag.tag-warn {
+  background: #fffbeb;
+  color: #d97706;
+  border: 1px solid #fde68a;
+}
+
+/* ── HITL LIST — multiple cards stacked */
+.hitl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 
 /* ── HITL CARD */
 .hitl-card {
