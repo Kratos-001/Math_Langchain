@@ -1,7 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import "./App.css";
 
 const BASE = "http://localhost:8000";
+
+const QUICK_TESTS = [
+  { label: "Math",       question: "What is 125 multiplied by 4?"           },
+  { label: "File write", question: "Write 'Hello from UI test' to test.txt" },
+  { label: "Expression", question: "What is (100 + 25) * 2 - 50?"           },
+];
 
 function timeStr() {
   return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -11,37 +17,56 @@ export default function App() {
   const [question, setQuestion] = useState("");
   const [status, setStatus]     = useState("");
   const [loading, setLoading]   = useState(false);
-  // Load history from localStorage on first render
+  const [active, setActive]     = useState("chat");
+  const [serverOk, setServerOk] = useState(null); // null=checking, true=up, false=down
+
   const [history, setHistory] = useState(() => {
-    try {
-      const saved = localStorage.getItem("math_agent_history");
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
+    try { return JSON.parse(localStorage.getItem("math_agent_history") || "[]"); }
+    catch { return []; }
   });
-  const [active, setActive] = useState("chat");
 
-  // List of pending HITL requests  { session_id, pending_action, pending_input, question }
   const [pending, setPending] = useState([]);
-
-  // Per-card resuming state  { [session_id]: "approving" | "rejecting" | null }
   const [resuming, setResuming] = useState({});
 
-  // Save history to localStorage whenever it changes
+  // Dev panel state
+  const [liveSessions, setLiveSessions]   = useState([]);
+  const [dbSessions, setDbSessions]       = useState([]);
+  const [devLoading, setDevLoading]       = useState(false);
+  const [sessionLookup, setSessionLookup] = useState("");
+  const [lookupResult, setLookupResult]   = useState(null);
+
+  // ── Persist history to localStorage
   useEffect(() => {
     localStorage.setItem("math_agent_history", JSON.stringify(history));
   }, [history]);
+
+  // ── Server health check every 5 seconds
+  useEffect(() => {
+    async function check() {
+      try {
+        const r = await fetch(`${BASE}/sessions`, { signal: AbortSignal.timeout(3000) });
+        setServerOk(r.ok);
+      } catch {
+        setServerOk(false);
+      }
+    }
+    check();
+    const id = setInterval(check, 5000);
+    return () => clearInterval(id);
+  }, []);
 
   const stats = {
     total   : history.length,
     approved: history.filter((h) => h.type === "approved").length,
     rejected: history.filter((h) => h.type === "rejected").length,
+    pending : pending.length,
+    math    : history.filter((h) => h.type === "math").length,
   };
 
-  async function sendQuestion() {
-    if (!question.trim()) return;
-    const q = question.trim();
+  // ── Send question
+  async function sendQuestion(q) {
+    const text = (q || question).trim();
+    if (!text) return;
     setLoading(true);
     setStatus("Thinking...");
     setQuestion("");
@@ -50,27 +75,23 @@ export default function App() {
       const res  = await fetch(`${BASE}/ask`, {
         method : "POST",
         headers: { "Content-Type": "application/json" },
-        body   : JSON.stringify({ question: q }),
+        body   : JSON.stringify({ question: text }),
       });
       const data = await res.json();
 
       if (data.status === "waiting_for_approval") {
-        // Add to the pending list — keeps all previous ones too
-        setPending((prev) => [
-          ...prev,
-          { ...data, question: q, time: timeStr() },
-        ]);
-        setStatus("");
+        setPending((prev) => [...prev, { ...data, question: text, time: timeStr() }]);
       } else {
-        addHistory(q, data.answer, "math");
-        setStatus("");
+        addHistory(text, data.answer, "math");
       }
+      setStatus("");
     } catch {
       setStatus("Cannot reach server. Make sure backend is running on port 8000.");
     }
     setLoading(false);
   }
 
+  // ── Resume (approve / reject)
   async function resume(item, approved) {
     const sid = item.session_id;
     setResuming((prev) => ({ ...prev, [sid]: approved ? "approving" : "rejecting" }));
@@ -82,11 +103,8 @@ export default function App() {
         body   : JSON.stringify({ session_id: sid, approved }),
       });
       const data = await res.json();
-
-      // Remove this card from pending list
       setPending((prev) => prev.filter((p) => p.session_id !== sid));
       setResuming((prev) => { const n = { ...prev }; delete n[sid]; return n; });
-
       addHistory(item.question, data.answer, approved ? "approved" : "rejected");
     } catch {
       setResuming((prev) => { const n = { ...prev }; delete n[sid]; return n; });
@@ -96,6 +114,51 @@ export default function App() {
   function addHistory(q, a, type) {
     setHistory((prev) => [{ q, a, type, time: timeStr(), id: Date.now() }, ...prev]);
   }
+
+  // ── Dev panel: fetch live + DB sessions
+  const refreshDev = useCallback(async () => {
+    setDevLoading(true);
+    try {
+      const [live, db] = await Promise.all([
+        fetch(`${BASE}/sessions`).then((r) => r.json()),
+        fetch(`${BASE}/history`).then((r) => r.json()),
+      ]);
+      setLiveSessions(Object.entries(live).map(([id, s]) => ({ session_id: id, ...s })));
+      setDbSessions(db);
+    } catch {
+      setLiveSessions([]);
+      setDbSessions([]);
+    }
+    setDevLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (active === "dev") refreshDev();
+  }, [active, refreshDev]);
+
+  // ── Session lookup
+  async function lookupSession() {
+    if (!sessionLookup.trim()) return;
+    try {
+      const db = await fetch(`${BASE}/history`).then((r) => r.json());
+      const found = db.find((s) => s.session_id === sessionLookup.trim());
+      setLookupResult(found || "not_found");
+    } catch {
+      setLookupResult("error");
+    }
+  }
+
+  // ── Clear history
+  function clearHistory() {
+    setHistory([]);
+    localStorage.removeItem("math_agent_history");
+  }
+
+  const navItems = [
+    { id: "chat",    icon: "⌘", label: "Chat"    },
+    { id: "history", icon: "≡", label: "History" },
+    { id: "dev",     icon: "⚙", label: "Dev"     },
+  ];
 
   return (
     <div className="page">
@@ -112,11 +175,7 @@ export default function App() {
 
         <p className="nav-label">Menu</p>
 
-        {[
-          { id: "chat",    icon: "⌘", label: "Chat"    },
-          { id: "history", icon: "≡", label: "History" },
-          { id: "stats",   icon: "◈", label: "Stats"   },
-        ].map((item) => (
+        {navItems.map((item) => (
           <div
             key={item.id}
             className={`nav-item ${active === item.id ? "active" : ""}`}
@@ -130,10 +189,30 @@ export default function App() {
           </div>
         ))}
 
+        {/* STATS MINI in sidebar */}
+        <div className="sidebar-stats">
+          <div className="sidebar-stat">
+            <span className="ss-val">{stats.total}</span>
+            <span className="ss-label">Total</span>
+          </div>
+          <div className="sidebar-stat">
+            <span className="ss-val" style={{ color: "#22c55e" }}>{stats.approved}</span>
+            <span className="ss-label">Approved</span>
+          </div>
+          <div className="sidebar-stat">
+            <span className="ss-val" style={{ color: "#ef4444" }}>{stats.rejected}</span>
+            <span className="ss-label">Rejected</span>
+          </div>
+          <div className="sidebar-stat">
+            <span className="ss-val" style={{ color: "#f59e0b" }}>{stats.pending}</span>
+            <span className="ss-label">Pending</span>
+          </div>
+        </div>
+
         <div className="sidebar-footer">
           <div className="status-dot">
-            <span className="dot-green" />
-            Server running
+            <span className={serverOk === false ? "dot-red" : "dot-green"} />
+            {serverOk === null ? "Checking…" : serverOk ? "Server online" : "Server offline"}
           </div>
         </div>
       </aside>
@@ -144,11 +223,11 @@ export default function App() {
         {/* TOPBAR */}
         <div className="topbar">
           <span className="topbar-title">
-            {active === "chat" ? "Chat" : active === "history" ? "History" : "Stats"}
+            {active === "chat" ? "Chat" : active === "history" ? "History" : "Dev Tools"}
           </span>
           <div className="topbar-right">
             {pending.length > 0 && (
-              <span className="tag tag-warn">{pending.length} pending approval{pending.length > 1 ? "s" : ""}</span>
+              <span className="tag tag-warn">{pending.length} pending</span>
             )}
             <span className="tag">HITL enabled</span>
             <span className="tag">gpt-4o-mini</span>
@@ -157,9 +236,25 @@ export default function App() {
 
         <div className="content">
 
-          {/* ── CHAT VIEW */}
+          {/* ══ CHAT VIEW ══ */}
           {active === "chat" && (
             <>
+              {/* STATS BAR */}
+              <div className="stats-bar">
+                {[
+                  { label: "Total",    val: stats.total,    color: "#6b7280" },
+                  { label: "Math",     val: stats.math,     color: "#6b7280" },
+                  { label: "Approved", val: stats.approved, color: "#16a34a" },
+                  { label: "Rejected", val: stats.rejected, color: "#dc2626" },
+                  { label: "Pending",  val: stats.pending,  color: "#d97706" },
+                ].map(({ label, val, color }) => (
+                  <div className="stats-bar-item" key={label}>
+                    <span className="stats-bar-val" style={{ color }}>{val}</span>
+                    <span className="stats-bar-label">{label}</span>
+                  </div>
+                ))}
+              </div>
+
               {/* ASK */}
               <div>
                 <p className="section-title">New Request</p>
@@ -173,14 +268,25 @@ export default function App() {
                       placeholder="What is 45 × 13?  or  Write 'Hello' to notes.txt"
                       disabled={loading}
                     />
-                    <button
-                      className="btn btn-primary"
-                      onClick={sendQuestion}
-                      disabled={loading || !question.trim()}
-                    >
+                    <button className="btn btn-primary" onClick={() => sendQuestion()} disabled={loading || !question.trim()}>
                       {loading ? "···" : "Send"}
                     </button>
                   </div>
+
+                  {/* QUICK TEST BUTTONS */}
+                  <div className="quick-tests">
+                    {QUICK_TESTS.map((t) => (
+                      <button
+                        key={t.label}
+                        className="btn btn-ghost"
+                        onClick={() => sendQuestion(t.question)}
+                        disabled={loading}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+
                   {status && (
                     <p className="status">
                       {loading && <span className="spinner" />}
@@ -225,18 +331,10 @@ export default function App() {
                             )}
                           </div>
                           <div className="hitl-btns">
-                            <button
-                              className="btn btn-approve"
-                              onClick={() => resume(item, true)}
-                              disabled={!!state}
-                            >
+                            <button className="btn btn-approve" onClick={() => resume(item, true)}  disabled={!!state}>
                               {state === "approving" ? "···" : "Approve"}
                             </button>
-                            <button
-                              className="btn btn-reject"
-                              onClick={() => resume(item, false)}
-                              disabled={!!state}
-                            >
+                            <button className="btn btn-reject"  onClick={() => resume(item, false)} disabled={!!state}>
                               {state === "rejecting" ? "···" : "Reject"}
                             </button>
                           </div>
@@ -247,24 +345,27 @@ export default function App() {
                 </div>
               )}
 
-              {/* RECENT — last 3 */}
+              {/* RECENT */}
               {history.length > 0 && (
                 <div>
                   <p className="section-title">Recent</p>
                   <div className="history-list">
-                    {history.slice(0, 3).map((h) => (
-                      <HistoryCard key={h.id} h={h} />
-                    ))}
+                    {history.slice(0, 3).map((h) => <HistoryCard key={h.id} h={h} />)}
                   </div>
                 </div>
               )}
             </>
           )}
 
-          {/* ── HISTORY VIEW */}
+          {/* ══ HISTORY VIEW ══ */}
           {active === "history" && (
             <div>
-              <p className="section-title">All Requests</p>
+              <div className="section-header">
+                <p className="section-title">All Requests</p>
+                {history.length > 0 && (
+                  <button className="btn btn-ghost btn-sm" onClick={clearHistory}>Clear all</button>
+                )}
+              </div>
               {history.length === 0 ? (
                 <div className="empty-state">
                   <div className="empty-icon">≡</div>
@@ -272,36 +373,141 @@ export default function App() {
                 </div>
               ) : (
                 <div className="history-list">
-                  {history.map((h) => (
-                    <HistoryCard key={h.id} h={h} />
-                  ))}
+                  {history.map((h) => <HistoryCard key={h.id} h={h} />)}
                 </div>
               )}
             </div>
           )}
 
-          {/* ── STATS VIEW */}
-          {active === "stats" && (
-            <div>
-              <p className="section-title">Overview</p>
-              <div className="stats-row">
-                <div className="stat-card">
-                  <div className="stat-value">{stats.total}</div>
-                  <div className="stat-label">Total requests</div>
+          {/* ══ DEV TOOLS VIEW ══ */}
+          {active === "dev" && (
+            <div className="dev-panel">
+
+              {/* SERVER HEALTH */}
+              <p className="section-title">Server Health</p>
+              <div className="card dev-health">
+                <div className="health-row">
+                  <span className={`health-dot ${serverOk === false ? "red" : serverOk ? "green" : "grey"}`} />
+                  <span className="health-label">
+                    {serverOk === null ? "Checking…" : serverOk ? "Backend is online at " : "Backend is OFFLINE — start with: "}
+                  </span>
+                  <code className="health-code">
+                    {serverOk ? BASE : "uvicorn main:app --reload"}
+                  </code>
                 </div>
-                <div className="stat-card">
-                  <div className="stat-value" style={{ color: "#16a34a" }}>
-                    {stats.approved}
-                  </div>
-                  <div className="stat-label">Approved</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-value" style={{ color: "#dc2626" }}>
-                    {stats.rejected}
-                  </div>
-                  <div className="stat-label">Rejected</div>
+                <div className="dev-links">
+                  <a href={`${BASE}/docs`} target="_blank" rel="noreferrer" className="dev-link">Swagger UI ↗</a>
+                  <a href={`${BASE}/history`} target="_blank" rel="noreferrer" className="dev-link">GET /history ↗</a>
+                  <a href={`${BASE}/sessions`} target="_blank" rel="noreferrer" className="dev-link">GET /sessions ↗</a>
                 </div>
               </div>
+
+              {/* QUICK TESTS */}
+              <p className="section-title" style={{ marginTop: 20 }}>Quick Tests</p>
+              <div className="card">
+                <p className="dev-hint">Fire a test request without typing. Results appear in Chat.</p>
+                <div className="quick-tests">
+                  {QUICK_TESTS.map((t) => (
+                    <button
+                      key={t.label}
+                      className="btn btn-ghost"
+                      onClick={() => { setActive("chat"); sendQuestion(t.question); }}
+                      disabled={loading}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* SESSION LOOKUP */}
+              <p className="section-title" style={{ marginTop: 20 }}>Session Lookup</p>
+              <div className="card">
+                <p className="dev-hint">Enter a session ID to see its full record from the database.</p>
+                <div className="ask-row" style={{ marginTop: 10 }}>
+                  <input
+                    className="input"
+                    placeholder="e.g. abc12345"
+                    value={sessionLookup}
+                    onChange={(e) => { setSessionLookup(e.target.value); setLookupResult(null); }}
+                    onKeyDown={(e) => e.key === "Enter" && lookupSession()}
+                  />
+                  <button className="btn btn-primary" onClick={lookupSession}>Look up</button>
+                </div>
+                {lookupResult && (
+                  <div className="lookup-result">
+                    {lookupResult === "not_found" ? (
+                      <p className="lookup-miss">No session found with that ID.</p>
+                    ) : lookupResult === "error" ? (
+                      <p className="lookup-miss">Error fetching — is the server running?</p>
+                    ) : (
+                      <table className="lookup-table">
+                        <tbody>
+                          {Object.entries(lookupResult).map(([k, v]) => (
+                            <tr key={k}>
+                              <td className="lt-key">{k}</td>
+                              <td className="lt-val">{v ?? "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* LIVE SESSIONS */}
+              <div className="dev-section-header" style={{ marginTop: 20 }}>
+                <p className="section-title">Live Sessions (in memory)</p>
+                <button className="btn btn-ghost btn-sm" onClick={refreshDev} disabled={devLoading}>
+                  {devLoading ? "···" : "Refresh"}
+                </button>
+              </div>
+              <div className="card">
+                {liveSessions.length === 0 ? (
+                  <p className="dev-empty">No active sessions right now.</p>
+                ) : (
+                  <table className="dev-table">
+                    <thead>
+                      <tr><th>Session ID</th><th>Question</th><th>Status</th></tr>
+                    </thead>
+                    <tbody>
+                      {liveSessions.map((s) => (
+                        <tr key={s.session_id}>
+                          <td><code>{s.session_id}</code></td>
+                          <td>{s.question}</td>
+                          <td><span className={`status-pill ${s.status}`}>{s.status}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {/* DB SESSIONS */}
+              <p className="section-title" style={{ marginTop: 20 }}>All Sessions (database)</p>
+              <div className="card">
+                {dbSessions.length === 0 ? (
+                  <p className="dev-empty">No sessions in database yet.</p>
+                ) : (
+                  <table className="dev-table">
+                    <thead>
+                      <tr><th>Session ID</th><th>Question</th><th>Status</th><th>Created</th></tr>
+                    </thead>
+                    <tbody>
+                      {dbSessions.map((s) => (
+                        <tr key={s.session_id}>
+                          <td><code>{s.session_id}</code></td>
+                          <td>{s.question}</td>
+                          <td><span className={`status-pill ${s.status}`}>{s.status}</span></td>
+                          <td className="dev-time">{s.created_at}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
             </div>
           )}
 
