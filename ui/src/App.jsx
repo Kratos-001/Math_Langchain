@@ -28,60 +28,10 @@ export default function App() {
   // Per-card resuming state  { [session_id]: "approving" | "rejecting" | null }
   const [resuming, setResuming] = useState({});
 
-  // Countdown timers  { [session_id]: secondsLeft }
-  const [countdowns, setCountdowns] = useState({});
-
-  const TIMEOUT_SECS = 120; // must match backend hitl_event.wait(timeout=120)
-
   // Save history to localStorage whenever it changes
   useEffect(() => {
     localStorage.setItem("math_agent_history", JSON.stringify(history));
   }, [history]);
-
-  // Start a countdown when a new pending card is added
-  useEffect(() => {
-    if (pending.length === 0) return;
-
-    const interval = setInterval(() => {
-      setCountdowns((prev) => {
-        const next = { ...prev };
-        let anyExpired = false;
-
-        pending.forEach((item) => {
-          const sid = item.session_id;
-          if (next[sid] === undefined) {
-            next[sid] = TIMEOUT_SECS; // initialise
-          } else if (next[sid] > 0) {
-            next[sid] -= 1;
-          } else {
-            anyExpired = true; // already 0
-          }
-        });
-
-        return next;
-      });
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [pending]);
-
-  // Remove cards whose countdown hit 0
-  useEffect(() => {
-    const expired = pending.filter(
-      (item) => countdowns[item.session_id] !== undefined && countdowns[item.session_id] <= 0
-    );
-    if (expired.length === 0) return;
-
-    expired.forEach((item) => {
-      const sid = item.session_id;
-      // small delay so user sees "Timed out" label before card disappears
-      setTimeout(() => {
-        setPending((prev) => prev.filter((p) => p.session_id !== sid));
-        setCountdowns((prev) => { const n = { ...prev }; delete n[sid]; return n; });
-        addHistory(item.question, "Request timed out — no response within 2 minutes.", "rejected");
-      }, 2000);
-    });
-  }, [countdowns]);
 
   const stats = {
     total   : history.length,
@@ -249,16 +199,13 @@ export default function App() {
                   </p>
                   <div className="hitl-list">
                     {pending.map((item) => {
-                      const state    = resuming[item.session_id];
-                      const secsLeft = countdowns[item.session_id] ?? TIMEOUT_SECS;
-                      const timedOut = secsLeft <= 0;
-                      const urgent   = secsLeft <= 30 && !timedOut;
+                      const state = resuming[item.session_id];
                       return (
-                        <div className={`hitl-card ${timedOut ? "timed-out" : ""}`} key={item.session_id}>
+                        <div className="hitl-card" key={item.session_id}>
                           <div className="hitl-header">
                             <span className="hitl-heading">{item.question}</span>
-                            <span className={`hitl-badge ${timedOut ? "badge-timeout" : urgent ? "badge-urgent" : ""}`}>
-                              {timedOut ? "Timed out" : state === "approving" ? "Approving…" : state === "rejecting" ? "Rejecting…" : "Pending"}
+                            <span className="hitl-badge">
+                              {state === "approving" ? "Approving…" : state === "rejecting" ? "Rejecting…" : "Pending"}
                             </span>
                           </div>
                           <div className="hitl-detail">
@@ -276,25 +223,19 @@ export default function App() {
                                 </div>
                               ) : null
                             )}
-                            <div className="detail-row">
-                              <span className="detail-key">Expires</span>
-                              <span className={`detail-val countdown ${urgent ? "urgent" : ""} ${timedOut ? "expired" : ""}`}>
-                                {timedOut ? "Expired" : `${Math.floor(secsLeft / 60)}:${String(secsLeft % 60).padStart(2, "0")}`}
-                              </span>
-                            </div>
                           </div>
                           <div className="hitl-btns">
                             <button
                               className="btn btn-approve"
                               onClick={() => resume(item, true)}
-                              disabled={!!state || timedOut}
+                              disabled={!!state}
                             >
                               {state === "approving" ? "···" : "Approve"}
                             </button>
                             <button
                               className="btn btn-reject"
                               onClick={() => resume(item, false)}
-                              disabled={!!state || timedOut}
+                              disabled={!!state}
                             >
                               {state === "rejecting" ? "···" : "Reject"}
                             </button>

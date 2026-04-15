@@ -125,15 +125,9 @@ def hitl_approval(tool_name: str, pending_input: dict) -> bool:
     # Signal /ask that HITL triggered — it can now return the response
     session["response_ready"].set()
 
-    # BLOCK this agent thread — wait max 120 seconds for human response
-    timed_out = not session["hitl_event"].wait(timeout=120)
+    # BLOCK this agent thread until /resume calls hitl_event.set()
+    session["hitl_event"].wait()
     session["hitl_event"].clear()  # reset for any subsequent HITL in same session
-
-    if timed_out:
-        session["status"] = "timed_out"
-        session["result"] = "Request timed out. No response received within 2 minutes."
-        session["response_ready"].set()  # unblock /ask or /resume if still waiting
-        return False  # auto-reject
 
     return session["approved"]
 

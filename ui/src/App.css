@@ -404,24 +404,6 @@ body {
   gap: 10px;
 }
 
-/* ── COUNTDOWN */
-.countdown {
-  font-variant-numeric: tabular-nums;
-  font-weight: 500;
-  color: #16a34a;
-}
-
-.countdown.urgent  { color: #d97706; font-weight: 600; }
-.countdown.expired { color: #dc2626; font-weight: 600; }
-
-/* ── TIMED OUT CARD */
-.hitl-card.timed-out {
-  border-color: #fecaca;
-  opacity: 0.7;
-}
-
-.hitl-badge.badge-urgent  { background: #fffbeb; color: #d97706; border-color: #fde68a; }
-.hitl-badge.badge-timeout { background: #fff5f5; color: #dc2626; border-color: #fecaca; }
 
 /* ── HISTORY */
 .history-list {
