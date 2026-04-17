@@ -187,6 +187,14 @@ def write_to_file(input: str) -> str:
     filename = data["filename"]
     content  = data["content"]
 
+    # ── GUARDRAIL: only allow writing to files that already exist
+    if not os.path.exists(filename):
+        return (
+            f"Blocked: '{filename}' does not exist. "
+            f"This tool can only write to existing files, not create new ones. "
+            f"Do NOT retry with a different filename. Inform the user and stop."
+        )
+
     approved = hitl_approval("write_to_file", {"filename": filename, "content": content})
     if not approved:
         return "Action denied by human. Do NOT retry. Inform the user the action was rejected and stop."
@@ -203,6 +211,14 @@ def append_to_file(input: str) -> str:
     data     = json.loads(input)
     filename = data["filename"]
     content  = data["content"]
+
+    # ── GUARDRAIL: only allow appending to files that already exist
+    if not os.path.exists(filename):
+        return (
+            f"Blocked: '{filename}' does not exist. "
+            f"This tool can only append to existing files, not create new ones. "
+            f"Do NOT retry with a different filename. Inform the user and stop."
+        )
 
     approved = hitl_approval("append_to_file", {"filename": filename, "content": content})
     if not approved:
